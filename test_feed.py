@@ -1,7 +1,5 @@
 import os
 import asyncio
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import telegram
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -12,41 +10,34 @@ TELEGRAM_BOT_TOKEN = "8903819958:AAHwRGMe9O3CRwJ7GVv2X7Ae0zGWG4tRUlI"
 TELEGRAM_CHAT_ID = "6892430933"
 
 # ==========================================
-# 2. RENDER COMPLIANCE (The Free Web Server)
+# 2. ASYNC HEALTH CHECK SERVER (No Threads!)
 # ==========================================
-class HealthCheckServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Morpho Sentinel is online.")
+# Instead of a blocking server, this uses native async sockets to keep Render happy.
+async def handle_health_check(reader, writer):
+    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 26\r\n\r\nMorpho Sentinel is online."
+    writer.write(response)
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
 
-def run_health_server():
+async def run_health_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
+    server = await asyncio.start_server(handle_health_check, "0.0.0.0", port)
     print(f"Health check server running on port {port}")
-    server.serve_forever()
+    async with server:
+        await server.serve_forever()
 
 # ==========================================
 # 3. CORE BOT LOGIC (Morpho Tracker)
 # ==========================================
 async def check_morpho_pools():
-    """
-    Your automated loop that runs every 30 seconds to track 
-    pool metrics, liquidations, or utilization changes.
-    """
     bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    
     while True:
         try:
-            # This logs to your Render dashboard terminal so you see it's working
             print("Scanning Morpho pools for liquidation triggers...")
-            
-            # Place your exact Morpho network RPC reading logic right here
-            
+            # Your Morpho network RPC reading logic goes here
         except Exception as e:
             print(f"Error tracking pools: {e}")
-            
         await asyncio.sleep(30)
 
 # ==========================================
@@ -58,33 +49,28 @@ async def status_command(update: telegram.Update, context: ContextTypes.DEFAULT_
         "🛡️ **Morpho Sentinel Status:**\n\n"
         "• System: Cloud Active (Render)\n"
         "• Monitoring: Active\n"
-        "• Market Volatility: Low (MiCA impact calm)\n"
         "• Status: All pools stable."
     )
 
-def run_telegram_polling():
-    """Starts the interactive command listener loop."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
+# ==========================================
+# 5. MAIN ASYNC ENTRY POINT
+# ==========================================
+async def main():
+    # Build the application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("status", status_command))
-    
+
+    # Initialize and start the telegram polling engine properly
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
     print("Interactive Telegram command listener started.")
-    application.run_polling(close_loop=False)
 
-# ==========================================
-# 5. MAIN ENTRY POINT
-# ==========================================
+    # Run everything together concurrently under a single event loop
+    await asyncio.gather(
+        run_health_server(),
+        check_morpho_pools()
+    )
+
 if __name__ == "__main__":
-    # Start the dummy web server so Render stays happy for free
-    web_thread = threading.Thread(target=run_health_server, daemon=True)
-    web_thread.start()
-    
-    # Start the interactive Telegram command listener
-    tg_thread = threading.Thread(target=run_telegram_polling, daemon=True)
-    tg_thread.start()
-    
-    # Run the main 30-second automated tracker
-    asyncio.run(check_morpho_pools())
-
+    asyncio.run(main())
